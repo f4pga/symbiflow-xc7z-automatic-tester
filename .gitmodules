@@ -1,0 +1,9 @@
+[submodule "linux-xlnx"]
+	path = linux-xlnx
+	url = https://github.com/Xilinx/linux-xlnx.git
+[submodule "zynq_bootloader"]
+	path = zynq_bootloader
+	url = https://github.com/pgielda/zynq_bootloader.git
+[submodule "devmemX"]
+	path = devmemX
+	url = https://github.com/pavel-a/devmemX.git
