@@ -1,0 +1,331 @@
+From 1d20df88986a8cf5c6cd832441f8778a4d50fb2d Mon Sep 17 00:00:00 2001
+From: Karol Gugala <kgugala@antmicro.com>
+Date: Tue, 17 Dec 2019 21:46:27 +0100
+Subject: [PATCH] Add symbiflow tester driver
+
+Signed-off-by: Karol Gugala <kgugala@antmicro.com>
+---
+ arch/arm/boot/dts/zynq-zybo-z7.dts |  17 ++
+ drivers/misc/Kconfig               |   4 +
+ drivers/misc/Makefile              |   1 +
+ drivers/misc/symbiflow-tester.c    | 259 +++++++++++++++++++++++++++++
+ 4 files changed, 281 insertions(+)
+ create mode 100644 drivers/misc/symbiflow-tester.c
+
+diff --git a/arch/arm/boot/dts/zynq-zybo-z7.dts b/arch/arm/boot/dts/zynq-zybo-z7.dts
+index 357b78a5c11b..4445de83a54e 100644
+--- a/arch/arm/boot/dts/zynq-zybo-z7.dts
++++ b/arch/arm/boot/dts/zynq-zybo-z7.dts
+@@ -66,3 +66,20 @@
+ 	dr_mode = "host";
+ 	usb-phy = <&usb_phy0>;
+ };
++
++&amba {
++	fpga-axi@0 {
++		compatible = "simple-bus";
++		#address-cells = <0x1>;
++		#size-cell = <0x1>;
++		interrupt-parent = <&intc>;
++		ranges;
++		symbiflow-tester@40000000 {
++			status = "okay";
++			compatible = "symbiflow,tester";
++			interrupt-parent = <&intc>;
++			interrupts = <0 29 4>;
++			reg = <0x40000000 0x1000>;
++		};
++	};
++};
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index 85679d13635c..06583ff9d525 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -546,6 +546,10 @@ config MISC_RTSX
+ 	tristate
+ 	default MISC_RTSX_PCI || MISC_RTSX_USB
+ 
++config SYMBIFLOW_TESTER
++	tristate
++	default m
++
+ source "drivers/misc/jesd204b/Kconfig"
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index fa1573024b5e..30f10f901530 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -62,3 +62,4 @@ obj-$(CONFIG_ASPEED_LPC_SNOOP)	+= aspeed-lpc-snoop.o
+ obj-$(CONFIG_PCI_ENDPOINT_TEST)	+= pci_endpoint_test.o
+ obj-$(CONFIG_OCXL)		+= ocxl/
+ obj-$(CONFIG_MISC_RTSX)		+= cardreader/
++obj-$(CONFIG_SYMBIFLOW_TESTER)  += symbiflow-tester.o
+diff --git a/drivers/misc/symbiflow-tester.c b/drivers/misc/symbiflow-tester.c
+new file mode 100644
+index 000000000000..ed17ea8db7ba
+--- /dev/null
++++ b/drivers/misc/symbiflow-tester.c
+@@ -0,0 +1,259 @@
++/*
++*  Copyright (C) 2019 Antmicro
++*
++* This program is free software; you can redistribute it and/or modify
++* it under the terms of the GNU General Public License as published by
++* the Free Software Foundation; either version 2 of the License, or
++* (at your option) any later version.
++*
++* This program is distributed in the hope that it will be useful,
++* but WITHOUT ANY WARRANTY; without even the implied warranty of
++* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++* GNU General Public License for more details.
++*
++* You should have received a copy of the GNU General Public License
++* along with this program; if not, write to the Free Software
++* Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++*/
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/platform_device.h>
++#include <linux/device.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/fs.h>
++#include <linux/cdev.h>
++#include <linux/ioctl.h>
++#include <linux/mutex.h>
++#include <linux/delay.h>
++#include <linux/uaccess.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_irq.h>
++
++#define DEVICE_NAME "symbiflow-tester"
++
++#define TESTER_CTRL_REG 0x00
++#define TESTER_INTERRUPT_BIT (1 << 4)
++
++#define IOCTL_GET_IRQ_COUNT 0
++
++#ifdef DEBUG
++#define INFO() printk(KERN_ERR"%s@%d\n", __func__, __LINE__)
++#else
++#define INFO()
++#endif
++
++struct symbiflow_tester {
++	dev_t char_dev_t;
++	struct class *char_class;
++	struct cdev *char_cdev;
++
++	int irq;
++	unsigned int __iomem *regs;
++	unsigned int interrupt_count;
++};
++
++static struct symbiflow_tester symbiflow_tester;
++
++static unsigned int symbiflow_tester_read_reg(unsigned int offset)
++{
++	volatile unsigned int* reg = (unsigned int*)(symbiflow_tester.regs + offset);
++	return *reg;
++}
++
++static void symbiflow_tester_write_reg(unsigned int offset, unsigned int value)
++{
++	volatile unsigned int* reg = (unsigned int*)(symbiflow_tester.regs + offset);
++	*reg = value;
++}
++
++static irqreturn_t symbiflow_tester_irq_handler(int irq, void *data)
++{
++	unsigned int reg;
++	INFO();
++	/* clear the interrupt */
++	reg = symbiflow_tester_read_reg(TESTER_CTRL_REG);
++	reg &= ~(TESTER_INTERRUPT_BIT);
++	symbiflow_tester_write_reg(TESTER_CTRL_REG, reg);
++
++	symbiflow_tester.interrupt_count++;
++	return IRQ_HANDLED;
++}
++
++
++static int symbiflow_tester_open(struct inode *inode, struct file *file)
++{
++	INFO();
++	return 0;
++}
++
++static int symbiflow_tester_release(struct inode *inode, struct file *file)
++{
++
++	INFO();
++	return 0;
++}
++
++static long symbiflow_tester_ioctl(struct file *file, unsigned int cmd,
++				     unsigned long data)
++{
++	INFO();
++	if(cmd == IOCTL_GET_IRQ_COUNT)
++		return symbiflow_tester.interrupt_count;
++	return 0;
++}
++
++static ssize_t symbiflow_tester_read(struct file *file,
++				char __user *buffer,
++				size_t length,
++				loff_t *offset)
++{
++	INFO();
++	return length;
++}
++
++const struct file_operations symbiflow_tester_fops = {
++	.open    = symbiflow_tester_open,
++	.read    = symbiflow_tester_read,
++	.release = symbiflow_tester_release,
++	.unlocked_ioctl = symbiflow_tester_ioctl,
++};
++
++static int symbiflow_tester_probe(struct platform_device *pdev)
++{
++	struct device_node *devnode = pdev->dev.of_node;
++	struct resource *res;
++	int result;
++	int err;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	symbiflow_tester.regs = devm_ioremap_resource(&pdev->dev,
++							res);
++
++	if (IS_ERR(symbiflow_tester.regs)) {
++		dev_err(&pdev->dev, "Could not map registers\n");
++		return -ENXIO;
++	}
++
++	/* Get the interrupt */
++	symbiflow_tester.irq = irq_of_parse_and_map(devnode, 0);
++
++	err = request_irq(symbiflow_tester.irq, symbiflow_tester_irq_handler, IRQF_SHARED,
++				"symbiflow-tester", &symbiflow_tester);
++
++	if (err) {
++		dev_err(&pdev->dev, "unable to request IRQ %d \n", symbiflow_tester.irq);
++		return err;
++	}
++
++	/* Create char device node */
++	result = alloc_chrdev_region(&symbiflow_tester.char_dev_t,
++				     0, 1,
++				     DEVICE_NAME "-reg");
++
++	if (result < 0) {
++		dev_err(&pdev->dev, "Failed to alloc chrdev region\n");
++		goto fail_alloc_chrdev_region;
++	}
++	symbiflow_tester.char_cdev = cdev_alloc();
++	if (!symbiflow_tester.char_cdev) {
++		result = -ENOMEM;
++		dev_err(&pdev->dev, "Failed to alloc cdev\n");
++		goto fail_alloc_cdev;
++	}
++	cdev_init(symbiflow_tester.char_cdev, &symbiflow_tester_fops);
++	result = cdev_add(symbiflow_tester.char_cdev,
++			  symbiflow_tester.char_dev_t, 1);
++	if (result < 0) {
++		dev_err(&pdev->dev, "Failed to add cdev\n");
++		goto fail_add_cdev;
++	}
++
++	symbiflow_tester.char_class =
++		class_create(THIS_MODULE,
++			     DEVICE_NAME "-class");
++
++	if (!symbiflow_tester.char_class) {
++		result = -EEXIST;
++		dev_err(&pdev->dev, "Failed to create cdev class\n");
++		goto fail_create_class;
++	}
++
++	if (!device_create(symbiflow_tester.char_class, NULL,
++			  symbiflow_tester.char_dev_t, NULL,
++			  DEVICE_NAME "%d",
++			  MINOR(symbiflow_tester.char_dev_t))) {
++
++		result = -EINVAL;
++		dev_err(&pdev->dev, "Failed to create device node\n");
++		goto fail_create_device;
++	}
++
++	symbiflow_tester.interrupt_count = 0;
++
++	return 0;
++
++fail_create_device:
++	class_destroy(symbiflow_tester.char_class);
++fail_create_class:
++	cdev_del(symbiflow_tester.char_cdev);
++fail_add_cdev:
++fail_alloc_cdev:
++	unregister_chrdev_region(symbiflow_tester.char_dev_t, 1);
++fail_alloc_chrdev_region:
++	free_irq(symbiflow_tester.irq, &symbiflow_tester);
++	return result;
++}
++
++static int symbiflow_tester_remove(struct platform_device *pdev)
++{
++	free_irq(symbiflow_tester.irq, &symbiflow_tester);
++	device_destroy(symbiflow_tester.char_class,
++		       symbiflow_tester.char_dev_t);
++	class_destroy(symbiflow_tester.char_class);
++	cdev_del(symbiflow_tester.char_cdev);
++	unregister_chrdev_region(symbiflow_tester.char_dev_t, 1);
++
++	return 0;
++}
++
++/* Match table for of_platform binding */
++static const struct of_device_id symbiflow_tester_of_match[] = {
++	{
++		.compatible = "symbiflow,tester",
++	},
++	{}
++};
++MODULE_DEVICE_TABLE(of, symbiflow_tester_of_match);
++
++static struct platform_driver symbiflow_tester_platform_driver = {
++	.probe  = symbiflow_tester_probe,
++	.remove = symbiflow_tester_remove,
++	.driver = {
++		.owner = THIS_MODULE,
++		.name = DEVICE_NAME,
++		.of_match_table = symbiflow_tester_of_match,
++	},
++};
++
++static int __init symbiflow_tester_init(void)
++{
++	INFO();
++	return platform_driver_register(&symbiflow_tester_platform_driver);
++}
++
++static void __exit symbiflow_tester_exit(void)
++{
++	INFO();
++	platform_driver_unregister(&symbiflow_tester_platform_driver);
++}
++
++module_init(symbiflow_tester_init);
++module_exit(symbiflow_tester_exit);
++
++MODULE_DESCRIPTION("Symbiflow tester");
++MODULE_LICENSE("GPL v2");
+-- 
+2.23.0
+
