@@ -108,6 +108,8 @@ def main():
                         help="Path to test kernel module")
     parser.add_argument("--module_name", required=True,
                         help="Test driver module name")
+    parser.add_argument("--driver_name", required=True,
+                        help="Test driver registration name")
     parser.add_argument("--bitstream", required=True,
                         help="Path to test bistream file")
     parser.add_argument("--dev", required=True,
@@ -117,8 +119,13 @@ def main():
                              "assuming the app is in PATH")
 
     args = parser.parse_args()
-    module = DriverModule(args.module, args.module_name, "symbiflow-tester")
-    bs = Bitstream(args.bitstream)
+
+    bit2bin = "bit2bitbin"
+    if args.bit2bin is not None:
+        bit2bin = args.bit2bin
+
+    module = DriverModule(args.module, args.module_name, args.driver_name)
+    bs = Bitstream(args.bitstream, bit2bin)
     bs.generate_bin()
     bs.program()
 
