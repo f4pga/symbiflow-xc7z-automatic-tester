@@ -3,6 +3,11 @@
 ## Description
 
 The system is designed for automatic biststream testing on xc7z devices.
+The system can be used with a CI system deploying the test bitstreams to the device and running the tests.
+System overview is presented in the picture bellow.
+
+![Test system overview](https://github.com/SymbiFlow/symbiflow-xc7z-automatic-tester/blob/master/graphics/xc7_test_system.png "Test system overview")
+
 Currently the system can be run the [Zybo-Z7](https://reference.digilentinc.com/reference/programmable-logic/zybo-z7/start).
 The following sections describe how to prepare test setup and run the tests.
 
@@ -142,7 +147,8 @@ cp bit2bitbin /usr/bin
 
 ### Running the test script
 
-Run the test script with the following command:
+The test scripts should be run by the automatic CI system.
+The tests can be run manually with the following command:
 
 ``` bash
 python symbiflow_test.py --module symbiflow-tester.ko --module_name symbiflow_tester --bitstream top.bit --dev /dev/symbiflow-tester0 --driver_name symbiflow-tester
@@ -161,3 +167,5 @@ The registers are accessible at ``0x40000000`` address.
 The first one writes random registers with random data, then reads it back and compare the values.
 
 The second one uses the PL peripheral to generate random number of PS interrupts. PS Linux driver counts them and report back to the test script (via IOCTL).
+
+The above mentioned tests are designed to be run against the bistream generated from the [AXI Lite Minitest](https://github.com/SymbiFlow/symbiflow-arch-defs/tree/master/xc7/tests/ps7/axi_lite_reg).
