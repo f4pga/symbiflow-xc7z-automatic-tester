@@ -78,6 +78,7 @@ Building the kernel:
 
 ``` bash
 cd linux-xlnx
+git apply ../linux/0001-Add-symbiflow-tester-driver.patch
 export ARCH=arm
 export CROSS_COMPILE=arm-none-eabi-
 export LOADADDR=0x8000
@@ -91,7 +92,7 @@ Copy the required files to the SD card:
 ``` bash
 cp arch/arm/boot/uImage /path/to/mountpoint/boot
 cp arch/arm/boot/dts/zynq-zybo-z7.dtb /path/to/mountpoint/boot/devicetree.dtb
-sudo cp drivers/misci/symbiflow-tester.ko /path/to/mountpoint/rootfs/root
+sudo cp drivers/misc/symbiflow-tester.ko /path/to/mountpoint/rootfs/root
 ```
 
 ### Adding required files to rootfs
@@ -101,7 +102,7 @@ Copy the required files to the SD card:
 ``` bash
 sudo cp python/symbiflow_test.py /path/to/mountpoint/rootfs/root
 sudo cp -a devmemX /path/to/mountpoint/rootfs/root
-sudo cp -a zynq_bootloader /path/to/mountpoint/root
+sudo cp -a zynq_bootloader /path/to/mountpoint/rootfs/root
 ```
 
 ## Running the tests
@@ -114,7 +115,7 @@ Stop U-Boot autoboot by pressing any key during countdown.
 In U-Boot's console run the following commands:
 
 ```
-setenv booargs "root=/dev/mmcblk0p2 rw rootwait"
+setenv bootargs "root=/dev/mmcblk0p2 rw rootwait"
 setenv bootcmd "load mmc 0 0x1000000 uImage && load mmc 0 0x2000000 devicetree.dtb && bootm 0x1000000 - 0x2000000"
 saveenv
 ```
