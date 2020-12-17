@@ -95,6 +95,7 @@ cp arch/arm/boot/dts/zynq-zybo-z7.dtb /path/to/mountpoint/boot/devicetree.dtb
 sudo cp drivers/misc/symbiflow-tester.ko /path/to/mountpoint/rootfs/root
 ```
 
+
 ### Adding required files to rootfs
 
 Copy the required files to the SD card:
