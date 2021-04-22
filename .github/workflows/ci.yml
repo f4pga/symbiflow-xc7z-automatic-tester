@@ -16,6 +16,8 @@ jobs:
       with:
         submodules: recursive
 
+    - uses: SymbiFlow/actions/checks@main
+
     - name: Install Dependencies
       run: |
         sudo apt update
